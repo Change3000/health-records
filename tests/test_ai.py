@@ -22,6 +22,7 @@ def answer(text):
 def api_key(monkeypatch):
     monkeypatch.setenv("GEMINI_API_KEY", "test-key")
     monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    monkeypatch.setattr(ai.time, "sleep", lambda seconds: None)
 
 
 def test_prompt_contains_age_and_values():
@@ -56,7 +57,8 @@ def test_missing_key(monkeypatch):
     [
         (FakeResponse(400, text="API key not valid. Please pass a valid API key."), "rejected"),
         (FakeResponse(429), "Rate limited"),
-        (FakeResponse(500), r"error \(500\)"),
+        (FakeResponse(503), r"busy \(503\)"),
+        (FakeResponse(404), r"error \(404\)"),
         (FakeResponse(200, {"promptFeedback": {"blockReason": "SAFETY"}}), "declined"),
         (FakeResponse(200, {"candidates": []}), "no answer"),
         (FakeResponse(200, answer("   ")), "empty"),
@@ -75,3 +77,44 @@ def test_network_failure(api_key, monkeypatch):
     monkeypatch.setattr(ai.requests, "post", fail)
     with pytest.raises(ai.RemarkError, match="Could not reach"):
         ai.get_remark(30, 90.0, 14.0, 180.0)
+
+
+def test_busy_model_is_retried(api_key, monkeypatch):
+    replies = [FakeResponse(503), FakeResponse(503), FakeResponse(200, answer("Values look normal."))]
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return replies.pop(0)
+
+    monkeypatch.setattr(ai.requests, "post", fake_post)
+    assert ai.get_remark(30, 90.0, 14.0, 180.0) == "Values look normal."
+    assert len(calls) == 3
+    assert all("gemini-flash-latest:" in url for url in calls)
+
+
+def test_backup_model_used_when_main_model_stays_busy(api_key, monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        if ai.BACKUP_MODEL + ":" in url:
+            return FakeResponse(200, answer("Values look normal."))
+        return FakeResponse(503)
+
+    monkeypatch.setattr(ai.requests, "post", fake_post)
+    assert ai.get_remark(30, 90.0, 14.0, 180.0) == "Values look normal."
+    assert len(calls) == ai.ATTEMPTS_PER_MODEL + 1
+
+
+def test_bad_key_is_not_retried(api_key, monkeypatch):
+    calls = []
+
+    def fake_post(url, **kwargs):
+        calls.append(url)
+        return FakeResponse(400, text="API key not valid. Please pass a valid API key.")
+
+    monkeypatch.setattr(ai.requests, "post", fake_post)
+    with pytest.raises(ai.RemarkError, match="rejected"):
+        ai.get_remark(30, 90.0, 14.0, 180.0)
+    assert len(calls) == 1
