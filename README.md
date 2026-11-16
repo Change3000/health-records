@@ -59,6 +59,10 @@ two sentences naming the likeliest risk. The API key is read from the
 `GEMINI_API_KEY` environment variable (`.env` locally) and is never stored in
 the code. A free key is available at https://aistudio.google.com/apikey.
 
+Busy or rate-limited answers (HTTP 429/5xx) are retried twice with a short
+wait. If the main model (`gemini-flash-latest`) still fails, the backup model
+(`gemini-flash-lite-latest`) is tried. A rejected key is reported straight away.
+
 If the API key is missing or the call fails, the record is still saved without
 a remark, and the remark is retried the next time the record is saved. Editing
 only the name or email keeps the existing remark. Changing the date of birth
